@@ -2,7 +2,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { deflateSync } from 'node:zlib';
 
-// SOLAR IRIS — a magnetic aperture caught at the instant it opens.
+// SUNSTEALER — an ocean of aurora curls up and steals a living sun.
 // All geometry and grain are deterministic; render at twice the final size.
 const W = 1024, H = 1024, S = 2, SW = W * S, SH = H * S;
 type Point = readonly [number, number];
@@ -14,11 +14,7 @@ const hash = (x: number, y: number) => {
   n = Math.imul(n ^ (n >>> 13), 1274126177);
   return ((n ^ (n >>> 16)) >>> 0) / 4294967296;
 };
-const angle = -0.39, ca = Math.cos(angle), sa = Math.sin(angle);
-function world(u: number, v: number): Point {
-  return [480 + u * ca - v * sa, 551 + u * sa + v * ca];
-}
-const gold: Color = [255, 172, 58], cyan: Color = [36, 224, 246];
+const gold: Color = [255, 132, 32], cyan: Color = [22, 235, 222];
 
 // Additive radiance with a soft shoulder: overlapping strands retain detail.
 function expose(value: number) { return 255 * (1 - Math.exp(-Math.max(0, value) / 255)); }
@@ -39,7 +35,7 @@ function stroke(a: Point, b: Point, radius: number, color: Color, strength: numb
     for (let c = 0; c < 3; c++) pixels[index + c] += color[c] * coverage;
   }
 }
-function curve(points: readonly Point[], width: number, color: Color, strength: number) {
+function curve(points: readonly Point[], width: number, color: Color, strength: number, fadeBottomRight = false) {
   const [a, b, c, d] = points;
   const count = 180;
   let previous = a;
@@ -48,93 +44,138 @@ function curve(points: readonly Point[], width: number, color: Color, strength: 
     const next: Point = [u ** 3 * a[0] + 3 * u * u * t * b[0] + 3 * u * t * t * c[0] + t ** 3 * d[0],
       u ** 3 * a[1] + 3 * u * u * t * b[1] + 3 * u * t * t * c[1] + t ** 3 * d[1]];
     const taper = 0.22 + 0.78 * Math.sin(Math.PI * t) ** 0.45;
-    stroke(previous, next, width * taper, color, strength);
+    const fade = fadeBottomRight ? 1 - 0.72 * clamp((next[0] - 512) / 160) * clamp((next[1] - 512) / 160) : 1;
+    stroke(previous, next, width * taper, color, strength * fade);
     previous = next;
   }
 }
-function localCurve(points: readonly Point[], width: number, color: Color, strength: number) {
-  curve(points.map(([u, v]) => world(u, v)), width, color, strength);
+const start = 2.35, end = 7.55;
+const spiralRadius = (a: number) => 660 * Math.exp(-0.305 * (a - start));
+const breadth = (a: number) => (42 + 57 * Math.sin(clamp((a - start) / (end - start)) * Math.PI)) * Math.min(1, (end - a) / 0.68);
+function wave(a: number, offset = 0): Point {
+  const r = spiralRadius(a) + offset;
+  return [554 + r * Math.cos(a), 426 + r * Math.sin(a)];
 }
 
 function render() {
-  const tip = world(350, 0);
+  // A continuous shaded volume gives the crest weight even at thumbnail size.
+  // Analytic polar distance keeps the surface clean, without polygon seams.
   for (let y = 0; y < SH; y++) for (let x = 0; x < SW; x++) {
     const px = (x + 0.5) / S, py = (y + 0.5) / S;
-    const dx = px - 480, dy = py - 551;
-    const u = dx * ca + dy * sa, v = -dx * sa + dy * ca;
-    const t = clamp((u + 350) / 700);
-    const height = 151 * Math.sin(Math.PI * t) ** 0.88;
-    const outside = Math.max(0, Math.abs(u) - 350);
-    const edge = Math.hypot(Math.abs(v) - height, outside * 1.5);
-    const inside = Math.abs(u) < 350 && Math.abs(v) < height;
-    const upper = v < 0;
-    const rimColor = upper ? gold : cyan;
-    const turbulence = 0.75 + 0.17 * Math.sin(u * 0.071 + v * 0.097) + 0.08 * Math.sin(u * 0.231 - v * 0.143);
-    const rim = (0.95 * Math.exp(-edge * edge / 2.8) + 0.36 * Math.exp(-edge / 10) + 0.14 * Math.exp(-edge / 39)) * turbulence;
-    const haze = Math.exp(-((u / 570) ** 2 + (v / 300) ** 2));
-    const tipDistance = Math.hypot(px - tip[0], py - tip[1]);
-    const flare = 2.7 * Math.exp(-tipDistance * tipDistance / 180) + 0.9 * Math.exp(-tipDistance / 23) + 0.34 * Math.exp(-tipDistance / 93);
-    const vignette = clamp(1 - Math.hypot((px - 520) / 850, (py - 500) / 850));
-    const base = inside ? [1.4, 3.0, 7.0] : [2.5 + haze * 2, 5 + haze * 10, 12 + haze * 18];
+    const dx = px - 554, dy = py - 426, r = Math.hypot(dx, dy);
+    let a = Math.atan2(dy, dx);
+    if (a < start) a += Math.PI * 2;
+    const valid = a <= end;
+    const width = valid ? breadth(a) : 0;
+    const delta = r - spiralRadius(a);
+    const q = delta / Math.max(0.1, width);
+    const haze = Math.exp(-(((px - 460) / 500) ** 2) - ((py - 420) / 430) ** 2);
+    const sunR = Math.hypot(px - 558, py - 425);
+    const sunGlow = 0.65 * Math.exp(-sunR / 53) + 1.2 * Math.exp(-(((sunR - 39) / 9) ** 2));
     const index = (y * SW + x) * 3;
-    for (let c = 0; c < 3; c++) pixels[index + c] = base[c] * (0.65 + vignette * 0.35) + rimColor[c] * rim + [255, 222, 162][c] * flare;
-
-    // A dim circular event horizon inside the almond gives it an iris,
-    // while preserving the large, almost black central negative space.
-    const r = Math.hypot((u + 22) * 0.94, v);
-    const polar = Math.atan2(v, u + 22);
-    const crescent = Math.exp(-(((r - 112) / 1.8) ** 2)) * (0.12 + 0.2 * (0.5 + 0.5 * Math.cos(polar + 0.7)));
-    if (inside) for (let c = 0; c < 3; c++) pixels[index + c] += (upper ? gold[c] : cyan[c]) * crescent;
-  }
-
-  // Large field loops curl back to a shared ignition point. Unequal spacing,
-  // reach and curvature keep the silhouette organic rather than mechanical.
-  for (const side of [-1, 1]) {
-    for (let j = 0; j < 19; j++) {
-      const q = j / 18;
-      const root = -330 + q * 540;
-      const h = 151 * Math.sin(Math.PI * (root + 350) / 700) ** 0.88;
-      const reach = (140 + 155 * Math.sin(q * Math.PI)) * (side < 0 ? 1 : 0.76);
-      const points: Point[] = [[root, side * h], [root - 110 + q * 110, side * (h + reach)],
-        [230 + q * 170, side * (reach + 90) - 35], [350 + (hash(j, side + 4) - 0.5) * 12, (hash(j, 7) - 0.5) * 12]];
-      const color = side < 0 ? (j % 5 === 0 ? cyan : gold) : (j % 6 === 0 ? gold : cyan);
-      localCurve(points, 5.2, color, 0.016);
-      localCurve(points, 1.05 + hash(j, side + 10) * 0.7, color, 0.36);
-      if (j % 3 === 0) localCurve(points, 0.3, [255, 246, 206], 0.55);
-      const companion: Point[] = points.map(([a, b], k) => [a - (k === 3 ? 0 : 5), b + side * (k === 3 ? 0 : 5 + q * 5)]);
-      localCurve(companion, 0.36, color, 0.22);
+    const base = [2.5 + haze * 2, 3 + haze * 6, 11 + haze * 14];
+    for (let c = 0; c < 3; c++) pixels[index + c] = base[c] + gold[c] * sunGlow;
+    if (valid) {
+      const glow = Math.exp(-Math.abs(delta + width * 0.7) / 21) * 0.19;
+      for (let c = 0; c < 3; c++) pixels[index + c] += cyan[c] * glow;
+      if (Math.abs(q) < 1) {
+        const edge = clamp((1 - Math.abs(q)) * width * 1.4);
+        const ridge = Math.exp(-(((q + 0.65) / 0.22) ** 2));
+        const ribs = (0.5 + 0.5 * Math.sin(q * 48 + a * 11 + Math.sin(a * 7) * 1.7)) ** 8;
+        const silk = (0.5 + 0.5 * Math.sin(q * 151 + a * 19)) ** 14;
+        const light = (0.15 + 0.95 * ridge + 0.17 * ribs + 0.07 * silk) * (0.7 + 0.3 * Math.sin(a - 3));
+        const body: Color = [5 + 10 * light, 25 + 160 * light, 43 + 163 * light];
+        for (let c = 0; c < 3; c++) pixels[index + c] = pixels[index + c] * (1 - edge) + body[c] * edge;
+      }
+    }
+    // The sun has a hard circular limb and turbulent, incandescent interior.
+    if (sunR < 39) {
+      const limb = Math.sqrt(Math.max(0, 1 - (sunR / 39) ** 2));
+      const cells = Math.sin(px * 0.31 + Math.sin(py * 0.19) * 2) * Math.sin(py * 0.37 + Math.sin(px * 0.12));
+      const power = 1.7 + limb * 2.1 + cells * 0.28;
+      pixels[index] = 255 * power;
+      pixels[index + 1] = (110 + limb * 95) * power;
+      pixels[index + 2] = (12 + limb * 55) * power;
     }
   }
 
-  // Thin, windswept trailing arcs make the motion legible at thumbnail size.
-  for (let j = 0; j < 11; j++) {
-    const shift = j * 9;
-    localCurve([[-615, 70 + shift], [-465, 200 + shift], [-240, 282 + shift], [160 + j * 10, 200 - j * 5]],
-      0.45, cyan, 0.08 + j * 0.005);
+  // Long liquid laminae follow one accelerating curl. Uneven, interrupted
+  // highlights avoid the uniform wireframe appearance of a mathematical spiral.
+  for (let j = 0; j < 76; j++) {
+    const f = j / 75 * 2 - 1;
+    const from = start + hash(j, 11) * 0.35;
+    const to = end - hash(j, 12) * 0.17;
+    let previous = wave(from, f * breadth(from));
+    for (let k = 1; k <= 310; k++) {
+      const a = from + (to - from) * k / 310;
+      const flutter = Math.sin(a * 13 + j * 0.7) * Math.sin(a * 4 + j) * 1.4;
+      const p = wave(a, f * breadth(a) + flutter * Math.sin((a - from) / (to - from) * Math.PI));
+      const hot = f < -0.68;
+      const color: Color = hot ? [130, 255, 232] : cyan;
+      const strength = (hot ? 0.52 : 0.13) * (0.55 + 0.45 * Math.sin(a * 9 + j * 1.7) ** 2);
+      stroke(previous, p, hot ? 0.8 : 0.36 + hash(j, 14) * 0.45, color, strength);
+      previous = p;
+    }
   }
 
-  // Fine plasma threads hug the aperture without crossing its dark interior.
-  for (let side of [-1, 1]) for (let j = 0; j < 7; j++) {
-    const h = (side < 0 ? 209 : 205) + j * 4;
-    localCurve([[-350, 0], [-180, side * h], [160, side * h], [350, 0]],
-      j === 0 ? 1.1 : 0.35, side < 0 ? gold : cyan, j === 0 ? 0.62 : 0.15);
+  // A thin luminous rim traces the lower-left tail's exiting contour.
+  let tailPrevious = wave(start, breadth(start));
+  for (let k = 1; k <= 100; k++) {
+    const t = k / 100, a = start + t * 0.48;
+    const p = wave(a, breadth(a));
+    stroke(tailPrevious, p, 0.55, [130, 255, 232], 0.48 * (1 - t) ** 0.7);
+    tailPrevious = p;
   }
 
-  // A single bright knot and directional diffraction spike, aligned to the eye.
-  const hot: Color = [255, 250, 229];
-  localCurve([[268, 0], [320, 0], [410, 0], [520, 0]], 0.75, hot, 0.85);
-  stroke(world(350, -29), world(350, 29), 0.42, cyan, 0.7);
-  stroke(tip, tip, 3.2, hot, 12);
+  // The curling lip strips a long molten filament directly off the sun.
+  for (let j = 0; j < 17; j++) {
+    const s = j / 16;
+    curve([[548 + s * 41, 448], [512 + s * 65, 520 + s * 22],
+      [644 + s * 23, 590 - s * 12], wave(end - 0.43 + s * 0.4, -8)],
+      0.55 + s * 0.65, gold, 0.48);
+  }
+  curve([[531, 454], [494, 504], [625, 623], wave(end - 0.12)], 0.85, [255, 235, 152], 0.95);
 
-  // Sparse, tiny sparks flow into the same corner; no competing bright stars.
-  for (let j = 0; j < 190; j++) {
-    const u = -500 + hash(j, 40) * 1030;
-    const v = (hash(j, 41) - 0.5) * 790;
-    const h = Math.abs(u) < 350 ? 151 * Math.sin(Math.PI * clamp((u + 350) / 700)) ** 0.88 : 0;
-    if (Math.abs(u) < 355 && Math.abs(v) < h + 24) continue;
-    const p = world(u, v);
-    const radius = 0.2 + hash(j, 42) ** 4 * 0.85;
-    stroke(p, world(u + 0.6 + hash(j, 43) * 2, v - 0.3), radius, j % 3 ? cyan : gold, 0.14 + hash(j, 44) * 0.38);
+  // Spray tears away tangentially at the crest: distinct sweeping blades,
+  // then tiny droplets, all traveling in the same direction.
+  for (let j = 0; j < 32; j++) {
+    const a = 3.65 + j / 31 * 2.4;
+    const root = wave(a, breadth(a) * (0.75 + hash(j, 25) * 0.22));
+    const reach = 30 + hash(j, 26) ** 2 * 138;
+    const tangent: Point = [-Math.sin(a), Math.cos(a)];
+    const radial: Point = [Math.cos(a), Math.sin(a)];
+    const tip: Point = [root[0] + tangent[0] * reach + radial[0] * reach * 0.26,
+      root[1] + tangent[1] * reach + radial[1] * reach * 0.26];
+    curve([root, [root[0] + radial[0] * 34, root[1] + radial[1] * 34],
+      [tip[0] - tangent[0] * 35, tip[1] - tangent[1] * 35], tip],
+      0.6 + hash(j, 27) * 1.1, j % 7 === 0 ? gold : cyan, 0.4);
+  }
+  for (let j = 0; j < 480; j++) {
+    const a = 3.4 + hash(j, 30) * 3.25;
+    const offset = breadth(a) + 6 + hash(j, 31) ** 2 * 130;
+    const p = wave(a, offset);
+    const length = 1 + hash(j, 32) ** 4 * 13;
+    const q: Point = [p[0] - Math.sin(a) * length, p[1] + Math.cos(a) * length];
+    stroke(p, q, 0.25 + hash(j, 33) ** 5 * 1.6, j % 9 === 0 ? gold : cyan, 0.18 + hash(j, 34) * 0.7);
+  }
+
+  // Broad perspective currents feed the giant wave from outside the frame.
+  for (let j = 0; j < 26; j++) {
+    const v = j / 25;
+    curve([[-120, 1010 + v * 220], [270, 686 + v * 240],
+      [570, 920 - v * 45], [1100, 640 + v * 360]],
+      0.45 + v * 1.25, j % 6 === 0 ? gold : cyan, 0.06 + v * 0.07, true);
+  }
+  // Short tapered radial flares establish that the captive light is a star.
+  for (let j = 0; j < 18; j++) {
+    const a = j * Math.PI * 2 / 18;
+    const reach = 5 + hash(j, 50) * 7;
+    for (let k = 0; k < 10; k++) {
+      const t = k / 10, r = 38 + reach * t, nextR = 38 + reach * (k + 1) / 10;
+      stroke([558 + Math.cos(a) * r, 425 + Math.sin(a) * r],
+        [558 + Math.cos(a) * nextR, 425 + Math.sin(a) * nextR],
+        0.8 * (1 - t), gold, 0.9 * (1 - t));
+    }
   }
 }
 
